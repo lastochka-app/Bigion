@@ -6,63 +6,59 @@
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 </head>
 <body>
-    <h1>Inblelt Video Hosting</h1>
+    <h1>Inblelt Video</h1>
 
-    <!-- БЛОК АВТОРИЗАЦИИ -->
     <div id="auth-section">
-        <h3>Вход / Регистрация</h3>
-        <input type="text" id="username" placeholder="Имя пользователя (Username)">
-        <input type="password" id="password" placeholder="Пароль">
-        <button onclick="handleAuth('signup')">Создать аккаунт</button>
-        <button onclick="handleAuth('signin')">Войти</button>
+        <input type="text" id="username" placeholder="Username">
+        <input type="password" id="password" placeholder="Password">
+        <button onclick="handleAuth('signup')">Регистрация</button>
+        <button onclick="handleAuth('signin')">Вход</button>
     </div>
 
     <div id="user-info" style="display:none;">
-        <p>Привет, <b id="display-name"></b>!</p>
+        <p>Вы вошли как: <b id="display-name"></b></p>
         <button onclick="signOut()">Выйти</button>
         <hr>
-        
-        <h3>Загрузить видео</h3>
         <input type="file" id="video-file" accept="video/*">
-        <input type="text" id="video-title" placeholder="Название видео">
-        <button onclick="uploadVideo()">Загрузить</button>
+        <input type="text" id="video-title" placeholder="Название">
+        <button onclick="uploadVideo()">Загрузить видео</button>
     </div>
 
     <hr>
-    <h3>Лента видео</h3>
-    <div id="video-feed">Загрузка...</div>
+    <div id="video-feed"></div>
 
     <script>
         const SUPABASE_URL = 'https://hroxfgyxhfiezodxmvfl.supabase.co';
         const SUPABASE_KEY = 'sb_publishable_ul6uWjrWu328yTL2qJJYGQ_a3xsnWR9';
         const supabase = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
-        // Функция-трансформер: превращает username в формат, который съест Supabase
-        function formatEmail(username) {
-            return `${username.toLowerCase()}@inblelt.local`;
-        }
+        // Вспомогательная функция для email
+        const toEmail = (name) => `${name.toLowerCase()}@inblelt.local`;
 
         async function handleAuth(type) {
-            const username = document.getElementById('username').value;
-            const password = document.getElementById('password').value;
-            const email = formatEmail(username);
+            const userVal = document.getElementById('username').value;
+            const passVal = document.getElementById('password').value;
+            const email = toEmail(userVal);
 
-            if (username.length < 3) return alert('Имя слишком короткое');
-
-            let result;
             if (type === 'signup') {
-                result = await supabase.auth.signUp({
-                    email,
-                    password,
-                    options: { data: { username: username } } // Сохраняем реальное имя в метаданные
-                });
-                if (!result.error) alert('Аккаунт создан! Теперь нажмите "Войти"');
-            } else {
-                result = await supabase.auth.signInWithPassword({ email, password });
-            }
+                // 1. Создаем системного пользователя
+                const { data, error } = await supabase.auth.signUp({ email, password: passVal });
+                if (error) return alert(error.message);
 
-            if (result.error) alert(result.error.message);
-            else if (type === 'signin') location.reload();
+                // 2. Создаем запись в нашей таблице profiles
+                if (data.user) {
+                    const { error: profileError } = await supabase
+                        .from('profiles')
+                        .insert([{ id: data.user.id, username: userVal }]);
+                    
+                    if (profileError) alert("Ошибка профиля: " + profileError.message);
+                    else alert("Готово! Теперь войдите.");
+                }
+            } else {
+                const { error } = await supabase.auth.signInWithPassword({ email, password: passVal });
+                if (error) alert(error.message);
+                else location.reload();
+            }
         }
 
         async function signOut() {
@@ -70,38 +66,46 @@
             location.reload();
         }
 
-        supabase.auth.onAuthStateChange((event, session) => {
+        // Проверка входа и получение данных из таблицы profiles
+        supabase.auth.onAuthStateChange(async (event, session) => {
             if (session) {
                 document.getElementById('auth-section').style.display = 'none';
                 document.getElementById('user-info').style.display = 'block';
-                // Берем имя из метаданных, которые мы сохранили при регистрации
-                document.getElementById('display-name').innerText = session.user.user_metadata.username || session.user.email;
+                
+                // Берем имя именно из таблицы profiles
+                const { data } = await supabase
+                    .from('profiles')
+                    .select('username')
+                    .eq('id', session.user.id)
+                    .single();
+                
+                if (data) document.getElementById('display-name').innerText = data.username;
             }
         });
-
-        // --- ЗАГРУЗКА И ЛАЙКИ (без изменений в логике) ---
 
         async function uploadVideo() {
             const file = document.getElementById('video-file').files[0];
             const title = document.getElementById('video-title').value;
             const { data: { user } } = await supabase.auth.getUser();
 
-            if (!file || !user) return alert('Ошибка доступа');
+            if (!file || !user) return alert('Ошибка');
+
+            // Получаем имя автора из профиля перед загрузкой
+            const { data: profile } = await supabase.from('profiles').select('username').eq('id', user.id).single();
 
             const fileName = `${Date.now()}_${file.name}`;
-            const { data, error } = await supabase.storage.from('videos').upload(fileName, file);
-
-            if (error) return alert('Ошибка Storage: ' + error.message);
+            const { error: storageErr } = await supabase.storage.from('videos').upload(fileName, file);
+            if (storageErr) return alert(storageErr.message);
 
             const { data: urlData } = supabase.storage.from('videos').getPublicUrl(fileName);
-            
-            await supabase.from('videos').insert([
-                { 
-                    title: title, 
-                    url: urlData.publicUrl, 
-                    user_id: user.id 
-                }
-            ]);
+
+            await supabase.from('videos').insert([{
+                title: title,
+                url: urlData.publicUrl,
+                user_id: user.id,
+                author_name: profile ? profile.username : 'Аноним'
+            }]);
+
             location.reload();
         }
 
@@ -114,9 +118,9 @@
                 videos.forEach(v => {
                     const div = document.createElement('div');
                     div.innerHTML = `
-                        <h4>${v.title}</h4>
-                        <video src="${v.url}" width="320" controls preload="metadata"></video>
-                        <p>Лайков: ${v.likes_count} <button onclick="likeVideo('${v.id}')">❤️</button></p>
+                        <h4>${v.title} <small>(Автор: ${v.author_name || 'Неизвестен'})</small></h4>
+                        <video src="${v.url}" width="320" controls></video>
+                        <p>Лайков: ${v.likes_count || 0} <button onclick="likeVideo('${v.id}')">❤️</button></p>
                         <hr>
                     `;
                     feed.appendChild(div);
@@ -126,7 +130,7 @@
 
         async function likeVideo(videoId) {
             const { data: { user } } = await supabase.auth.getUser();
-            if (!user) return alert('Войдите для лайка');
+            if (!user) return alert('Войдите!');
 
             const { error } = await supabase.from('likes').insert([{ user_id: user.id, video_id: videoId }]);
             if (error) return alert('Уже лайкнуто');
